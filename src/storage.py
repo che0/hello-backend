@@ -1,9 +1,6 @@
-import socket
-import json
-import MySQLdb
 import os
+import MySQLdb
 from contextlib import closing
-from flask import Flask, g
 
 
 class NumberStorage:
@@ -34,7 +31,9 @@ class NumberStorage:
     def _initialize_db(self):
         with closing(self.db.cursor()) as c:
             c.execute("CREATE TABLE IF NOT EXISTS numbers (name VARCHAR(10) PRIMARY KEY, value INT UNSIGNED)")
+            c.execute("CREATE TABLE IF NOT EXISTS reset_log (reset_time DATETIME PRIMARY KEY)")
             c.execute("INSERT IGNORE INTO numbers (name, value) VALUES ('the_number', 0)")
+            c.execute("INSERT IGNORE INTO numbers (name, value) VALUES ('reset_cnt', 0)")
 
     def increment_and_get_number(self):
         with closing(self.db.cursor()) as c:
@@ -49,44 +48,29 @@ class NumberStorage:
                 c.execute('ROLLBACK')
                 raise
 
+    def reset_counter(self):
+        with closing(self.db.cursor()) as c:
+            try:
+                c.execute('START TRANSACTION')
+                c.execute("UPDATE numbers SET value = 0 WHERE name = 'the_number'")
+                c.execute("UPDATE numbers SET value = value + 1 WHERE name = 'reset_cnt'")
+                c.execute("INSERT INTO reset_log (reset_time) VALUES (NOW())")
+                c.execute('COMMIT')
+            except Exception:
+                c.execute('ROLLBACK')
+                raise
 
-app = Flask(__name__)
-
-
-def get_store():
-    if 'store' not in g:
-        g.store = NumberStorage()
-    return g.store
-
-
-@app.teardown_appcontext
-def teardown_store(exc):
-    store = g.pop('store', None)
-    if store is not None:
-        store.close()
-
-
-@app.route("/")
-def hello():
-    return "Hello World, from {}".format(socket.gethostname())
-
-
-@app.route("/backend")
-def cat():
-    number = get_store().increment_and_get_number()
-
-    return json.dumps({
-        'status': 200,
-        'number': number,
-        'hostname': socket.gethostname(),
-    })
-
-@app.route("/ready")
-def ready():
-    # check we have store
-    get_store()
-    return 'OK'
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=80)
+    def reset_info(self):
+        with closing(self.db.cursor()) as c:
+            try:
+                c.execute('START TRANSACTION')
+                c.execute("SELECT value FROM numbers WHERE name = 'reset_cnt'")
+                reset_count = c.fetchone()[0]
+                c.execute("SELECT MAX(reset_time) FROM reset_log")
+                if c.rowcount > 0:
+                    last_reset = c.fetchone()[0]
+                else:
+                    last_reset = None
+                return {'count': reset_count, 'last': last_reset}
+            finally:
+                c.execute('ROLLBACK')
